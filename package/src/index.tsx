@@ -25,7 +25,9 @@ import {
   SelectorsArr,
   Snapshots,
   SelectorConfig,
-  atomFamilies,
+  AtomFamilies,
+  SelectorFamilyConfig,
+  SelectorFamilies,
 } from './types/types';
 
 // ----- TESTING -----
@@ -37,7 +39,7 @@ let readables: Readables<any> = [];
 
 //Object used to store families and their respective members (values are nested objects
 // that are tracking each atom family member created)
-const atomFamilies: atomFamilies = {};
+const atomFamilies: AtomFamilies = {};
 
 // State for recording toggle
 const recordingState: RecoilState<boolean> = recoilAtom<boolean>({
@@ -141,10 +143,11 @@ export function atomFamily<T, P extends SerializableParam>(config: AtomFamilyOpt
     const newAtomFamilyMember = recoilAtomFamily(config)(params);
     const strParams = JSON.stringify(params);
     if (!(strParams in atomFamilies[key])) atomFamilies[key][strParams] = newAtomFamilyMember;
-
     return newAtomFamilyMember;
   };
 }
+
+let selectorFamilies: SelectorFamilies<any, SerializableParam> = {};
 
 export function selectorFamily<T, P extends SerializableParam>(
   options: ReadWriteSelectorFamilyOptions<T, P>,
@@ -159,18 +162,64 @@ export function selectorFamily(
     | ReadWriteSelectorFamilyOptions<any, SerializableParam>
     | ReadOnlySelectorFamilyOptions<any, SerializableParam>,
 ) {
-  const { key, get } = config;
+  const { key } = config;
+  const configGet = config.get;
 
   let returnedPromise = false;
 
+  //HIGH PRIORITY: should be checking the returned function from get
   if (
-    !get ||
-    get.constructor.name === 'AsyncFunction' ||
-    get.toString().match(/^\s*return\s*_.*\.apply\(this, arguments\);$/m) ||
+    !configGet ||
+    configGet.constructor.name === 'AsyncFunction' ||
+    configGet.toString().match(/^\s*return\s*_.*\.apply\(this, arguments\);$/m) ||
     snapshots.length > 0
   ) {
     return recoilSelectorFamily(config);
   }
+
+  const getter = (params: SerializableParam) => (arg: any) => {
+    // Run user-defined get method & capture its return value
+    const { get } = arg;
+    const newValue = configGet(params)(arg);
+    // Only capture selector data if currently recording
+    if (get(recordingState)) {
+      if (snapshots.length === 0) {
+        // Promise-validation is expensive, so we only do it once, on initial load
+        if (
+          typeof newValue === 'object' &&
+          newValue !== null &&
+          Object.prototype.toString.call(newValue) === '[object Promise]'
+        ) {
+          delete selectorFamilies[key];
+          returnedPromise = true;
+        } else {
+          //FIGURE OUT WHAT PARAMTERIZED KEY LOOKS LIKE
+          initialRender.push({ key, newValue });
+        }
+      } else if (!returnedPromise) {
+        if (!(params! in selectorFamilies[key].prevParams))
+          selectorFamilies[key].prevParams.push(params);
+        setTimeout(
+          () => snapshots[snapshots.length - 1].selectorFamilies.push({ key, params, newValue }),
+          0,
+        );
+      }
+    }
+    // Return out value from original get method
+    return newValue;
+  };
+
+  // Create a new config object with updated properties
+  const newConfig: SelectorFamilyConfig<any, SerializableParam> = { key, get: getter };
+  if ('set' in config) {
+    newConfig.set = (params: SerializableParam) => config.set(params);
+  }
+
+  // Create selector generator & add to selectorFamily for test setup
+  const trackedSelectorFamily = recoilSelectorFamily(newConfig);
+  selectorFamilies[key] = { generator: trackedSelectorFamily, prevParams: [] };
+
+  return trackedSelectorFamily;
 }
 
 // ----- TRANSACTION PROVIDER -----
@@ -232,14 +281,20 @@ export const ChromogenObserver: React.FC = () => {
             const value = snapshot.getLoadable(memberRecoilState).contents;
             const previous = previousSnapshot.getLoadable(memberRecoilState).contents;
             const updated = value !== previous;
-
             atomFamilyState.push({ family, key, value, updated });
           }
         }
+
+        for (const family in selectorFamilies) {
+          const { prevParams, generator } = selectorFamilies[family];
+          prevParams.forEach((param) => {
+            console.log('snapshot of selector fam', snapshot.getLoadable(generator(param)));
+          });
+        }
+
         // Add current transaction snapshot to snapshots array
-        snapshots.push({ state, selectors: [], atomFamilyState });
+        snapshots.push({ state, selectors: [], atomFamilyState, selectorFamilies: [] });
       }
-      console.log(snapshots);
     },
   );
 
