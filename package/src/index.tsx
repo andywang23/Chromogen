@@ -1,12 +1,13 @@
+/* eslint-disable */
 import React, { useState, useEffect, CSSProperties } from 'react';
 import {
   selector as recoilSelector,
   atom as recoilAtom,
   atomFamily as recoilAtomFamily,
   selectorFamily as recoilSelectorFamily,
-  useRecoilState,
   // eslint-disable-next-line camelcase
   useRecoilTransactionObserver_UNSTABLE,
+  useRecoilState,
   RecoilState,
   RecoilValueReadOnly,
   AtomOptions,
@@ -28,18 +29,25 @@ import {
   AtomFamilies,
   SelectorFamilyConfig,
   SelectorFamilies,
+  Setters,
+  SelectorFamilyArr,
 } from './types/types';
+/* eslint-enable */
 
 // ----- TESTING -----
 // Arrays used to compose test string
 const writeables: Writeables<any> = [];
+const settables: Array<string> = [];
 const snapshots: Snapshots = [];
 const initialRender: SelectorsArr = [];
+const initialRenderFamilies: SelectorFamilyArr = [];
+const setters: Setters = [];
 let readables: Readables<any> = [];
-
-//Object used to store families and their respective members (values are nested objects
-// that are tracking each atom family member created)
+/* Object used to store families and their respective members (values are nested objects
+that are tracking each atom family member created) */
 const atomFamilies: AtomFamilies = {};
+//Track all selector families and all params that were passed in for import
+let selectorFamilies: SelectorFamilies<any, SerializableParam> = {};
 
 // State for recording toggle
 const recordingState: RecoilState<boolean> = recoilAtom<boolean>({
@@ -93,7 +101,7 @@ export function selector(config: ReadWriteSelectorOptions<any> | ReadOnlySelecto
         if (
           typeof newValue === 'object' &&
           newValue !== null &&
-          Object.prototype.toString.call(newValue) === '[object Promise]'
+          newValue.constructor.name === 'Promise'
         ) {
           readables = readables.filter((el) => el.key !== key);
           returnedPromise = true;
@@ -112,7 +120,22 @@ export function selector(config: ReadWriteSelectorOptions<any> | ReadOnlySelecto
   // Create a new config object with updated properties
   const newConfig: SelectorConfig<any> = { key, get: getter };
   if ('set' in config) {
-    newConfig.set = (...args) => config.set(...args);
+    const { set } = config;
+    const setter = (...args: any[]) => {
+      // TYPESCRIPT HACK => should be refactored
+      const [utils, setValue] = args;
+      if (utils.get(recordingState) && setters.length > 0) {
+        const newValue = args[1];
+        // setTimeout is required to attribute setter to correct state
+        setTimeout(() => {
+          setters[setters.length - 1].setter = { key, newValue };
+        }, 0);
+      }
+      // TYPESCRIPT HACK pt. 2
+      return set(utils, setValue);
+    };
+    newConfig.set = setter;
+    settables.push(key);
   }
 
   // Create selector & add to readables for test setup
@@ -121,7 +144,7 @@ export function selector(config: ReadWriteSelectorOptions<any> | ReadOnlySelecto
   return trackedSelector;
 }
 
-//switching to function declaration
+// switching to function declaration
 export function atom<T>(config: AtomOptions<T>): RecoilState<T> {
   const newAtom = recoilAtom<any>(config);
 
@@ -130,10 +153,10 @@ export function atom<T>(config: AtomOptions<T>): RecoilState<T> {
   return newAtom;
 }
 
-/**atomfamily returns a function that takes in a parameter; when called, the returned function will
+/* atomFamily returns a function that takes in a parameter; when called, the returned function will
  * return a specific atom based on the family template and that can only be accessed by calling the
  * function again with the same parameter
- **/
+ */
 
 export function atomFamily<T, P extends SerializableParam>(config: AtomFamilyOptions<T, P>) {
   const { key } = config;
@@ -146,8 +169,6 @@ export function atomFamily<T, P extends SerializableParam>(config: AtomFamilyOpt
     return newAtomFamilyMember;
   };
 }
-
-let selectorFamilies: SelectorFamilies<any, SerializableParam> = {};
 
 export function selectorFamily<T, P extends SerializableParam>(
   options: ReadWriteSelectorFamilyOptions<T, P>,
@@ -164,7 +185,6 @@ export function selectorFamily(
 ) {
   const { key } = config;
   const configGet = config.get;
-
   let returnedPromise = false;
 
   //HIGH PRIORITY: should be checking the returned function from get
@@ -193,8 +213,7 @@ export function selectorFamily(
           delete selectorFamilies[key];
           returnedPromise = true;
         } else {
-          //FIGURE OUT WHAT PARAMTERIZED KEY LOOKS LIKE
-          initialRender.push({ key, newValue });
+          initialRenderFamilies.push({ key, params, newValue });
         }
       } else if (!returnedPromise) {
         if (!(params! in selectorFamilies[key].prevParams))
@@ -217,8 +236,7 @@ export function selectorFamily(
 
   // Create selector generator & add to selectorFamily for test setup
   const trackedSelectorFamily = recoilSelectorFamily(newConfig);
-  selectorFamilies[key] = { generator: trackedSelectorFamily, prevParams: [] };
-
+  selectorFamilies[key] = { trackedSelectorFamily, prevParams: [] };
   return trackedSelectorFamily;
 }
 
@@ -245,7 +263,7 @@ const divStyle: CSSProperties = {
 
 export const ChromogenObserver: React.FC = () => {
   // File stores URL for generated test file Blob containing output() string
-  //Initializing file as undefined over null to match typing for AnchorHTML attributes from React
+  // Initializing file as undefined over null to match typing for AnchorHTML attributes from React
   const [file, setFile] = useState<undefined | string>(undefined);
   const [recording, setRecording] = useRecoilState<boolean>(recordingState);
 
@@ -263,7 +281,7 @@ export const ChromogenObserver: React.FC = () => {
           const value = snapshot.getLoadable(item).contents;
           const previous = previousSnapshot.getLoadable(item).contents;
           const updated = value !== previous;
-          return { key, value, updated };
+          return { key, value, previous, updated };
         });
 
         //TODO: FIX TYPE
@@ -284,16 +302,9 @@ export const ChromogenObserver: React.FC = () => {
             atomFamilyState.push({ family, key, value, updated });
           }
         }
-
-        for (const family in selectorFamilies) {
-          const { prevParams, generator } = selectorFamilies[family];
-          prevParams.forEach((param) => {
-            console.log('snapshot of selector fam', snapshot.getLoadable(generator(param)));
-          });
-        }
-
         // Add current transaction snapshot to snapshots array
         snapshots.push({ state, selectors: [], atomFamilyState, selectorFamilies: [] });
+        setters.push({ state, setter: null });
       }
     },
   );
@@ -303,19 +314,31 @@ export const ChromogenObserver: React.FC = () => {
     <div style={divStyle}>
       <button
         aria-label="capture test"
-        style={{ ...buttonStyle, backgroundColor: 'green' }}
+        style={{ ...buttonStyle, backgroundColor: 'limegreen' }}
         type="button"
         onClick={() =>
           setFile(
             URL.createObjectURL(
-              new Blob([output(writeables, readables, snapshots, initialRender, atomFamilies)]),
+              new Blob([
+                output(
+                  writeables,
+                  readables,
+                  snapshots,
+                  initialRender,
+                  initialRenderFamilies,
+                  setters,
+                  settables,
+                  atomFamilies,
+                  selectorFamilies,
+                ),
+              ]),
             ),
           )
         }
       />
       <button
         aria-label={recording ? 'pause' : 'record'}
-        style={{ ...buttonStyle, backgroundColor: recording ? 'red' : 'yellow', left: '30px' }}
+        style={{ ...buttonStyle, backgroundColor: recording ? 'red' : 'yellow' }}
         type="button"
         onClick={() => {
           setRecording(!recording);

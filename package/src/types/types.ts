@@ -15,21 +15,22 @@ type ResetRecoilState = (recoilVal: RecoilState<any>) => void;
 interface AtomFamilyMembers {
   [atomName: string]: RecoilState<any>;
 }
-interface SelectorFamilyMembers<T, P> {
-  generator: (param: P) => RecoilState<T> | RecoilValueReadOnly<T>;
-  prevParams: Array<any>;
-}
 
 // ----- EXPORTING TYPES TO BE USED IN SRC/.TSX FILES -----
 export type GetRecoilValue = <T>(recoilVal: RecoilValue<T>) => T;
 export type Writeables<T> = Array<RecoilState<T>>;
 export type Readables<T> = Array<RecoilValueReadOnly<T> | RecoilState<T>>;
 export type SelectorsArr = Array<{ key: string; newValue: any }>;
+export type SelectorFamilyArr = Array<{ key: string; params: any; newValue: any }>;
 export type Snapshots = Array<{
-  state: { key: string; value: any; updated: boolean }[];
+  state: { key: string; value: any; previous: any; updated: boolean }[];
   selectors: SelectorsArr;
   atomFamilyState: any[];
   selectorFamilies: any[];
+}>;
+export type Setters = Array<{
+  state: { key: string; value: any; previous: any; updated: boolean }[];
+  setter: null | { key: string; newValue: any };
 }>;
 export interface SelectorConfig<T> {
   key: string;
@@ -58,7 +59,10 @@ export interface SelectorFamilyConfig<T, P extends SerializableParam> {
   // >,
   dangerouslyAllowMutability?: boolean;
 }
-
+export interface SelectorFamilyMembers<T, P> {
+  trackedSelectorFamily: (param: P) => RecoilState<T> | RecoilValueReadOnly<T>;
+  prevParams: Array<any>;
+}
 export interface SelectorFamilies<T, P> {
   [familyName: string]: SelectorFamilyMembers<T, P>;
 }
